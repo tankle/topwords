@@ -32,6 +32,9 @@ case class TopWORDSArgs(inputLoc: String = "",
   * TopWORDS Argument Parser
   */
 object TopWORDSParser extends Serializable {
+  /**
+    * 创建命令行解析器
+    */
   val parser = new scopt.OptionParser[TopWORDSArgs]("TopWORDSArgs") {
     head("scopt", "3.x")
     opt[String]("inputLoc") action { (x, c) =>

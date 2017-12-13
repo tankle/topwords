@@ -17,7 +17,7 @@ object TestTopWORDS extends Serializable {
     val outputFile = "test_data/test_output"
     val files = FileSystem.get(spark.sparkContext.hadoopConfiguration)
     if (files.exists(new Path(outputFile))) files.delete(new Path(outputFile), true)
-    val corpus = spark.sparkContext.textFile(inputFile)
+    val corpus = spark.read.textFile(inputFile)
     new TopWORDS(
       tauL = 10,
       tauF = 5,

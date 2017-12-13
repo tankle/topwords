@@ -20,8 +20,8 @@ object TopWORDSApp extends Serializable {
         if (files.exists(new Path(args.outputLoc))) files.delete(new Path(args.outputLoc), true)
         // read input corpus
         val corpus = if (args.numPartitions > 0)
-          spark.sparkContext.textFile(args.inputLoc).repartition(args.numPartitions)
-        else spark.sparkContext.textFile(args.inputLoc)
+          spark.read.textFile(args.inputLoc).repartition(args.numPartitions)
+        else spark.read.textFile(args.inputLoc)
         LOGGER.info("Number of lines of input corpus: " + corpus.count())
         // run TopWORDS with the parsed arguments
         new TopWORDS(

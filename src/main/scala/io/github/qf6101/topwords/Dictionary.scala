@@ -1,9 +1,9 @@
 package io.github.qf6101.topwords
 
-import org.apache.spark.SparkContext
-import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.functions.{col, sum}
+import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.storage.StorageLevel
-
+import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
 /**
@@ -44,11 +44,12 @@ class Dictionary(val thetaS: Map[String, Double],
     * @param dictFile saving destination
     */
   def save(dictFile: String): Unit = {
-    val sc = SparkContext.getOrCreate()
+    val spark = SparkSession.builder().getOrCreate()
+//    val sc = SparkContext.getOrCreate()
     // saving theta values
-    sc.parallelize(thetaS.filter(_._1.length > 1).toList.sortBy(_._2).reverse).repartition(1).saveAsTextFile(dictFile + "/thetaS")
+    spark.sparkContext.parallelize(thetaS.filter(_._1.length > 1).toList.sortBy(_._2).reverse).repartition(1).saveAsTextFile(dictFile + "/thetaS")
     // saving phi values
-    if (phiS != Nil) sc.parallelize(phiS).repartition(1).saveAsTextFile(dictFile + "/phiS")
+    if (phiS != Nil) spark.sparkContext.parallelize(phiS).repartition(1).saveAsTextFile(dictFile + "/phiS")
   }
 }
 
@@ -62,10 +63,14 @@ object Dictionary extends Serializable {
     * @param tauF   threshold of word frequency
     * @return an overcomplete dictionary
     */
-  def apply(corpus: RDD[String],
+  def apply(corpus: Dataset[String],
             tauL: Int,
             tauF: Int,
             useProbThld: Double): Dictionary = {
+
+    val sparkSession = SparkSession.builder.getOrCreate()
+    import sparkSession.implicits._
+
     //enumerate all the possible words: corpus -> words
     val words = corpus.flatMap { text =>
       val permutations = ListBuffer[String]()
@@ -75,27 +80,54 @@ object Dictionary extends Serializable {
         }
       }
       permutations
-    }.map(_ -> 1).reduceByKey(_ + _).filter { case (word, freq) =>
-      // leave the single characters in dictionary for smoothing reason even if they are low frequency
-      word.length == 1 || freq >= tauF
-    }.persist(StorageLevel.MEMORY_AND_DISK_SER_2)
+    }.withColumnRenamed("value", "word")
+      .groupBy("word").count().filter(row =>{
+      val word = row.getString(0)
+      val count = row.getLong(1)
+      if(word.length == 1 || count >= tauF) true
+      else false
+    })
+//      map(_ -> 1).reduceByKey(_ + _)
+//      .filter { case (word, freq) =>
+//      // leave the single characters in dictionary for smoothing reason even if they are low frequency
+//      word.length == 1 || freq >= tauF
+//    }
+    .persist(StorageLevel.MEMORY_AND_DISK_SER_2)
     //filter words by the use probability threshold: words -> prunedWords
-    val sumWordFreq = words.map(_._2).sum()
-    val prunedWords = words.map { case (word, freq) =>
-      (word, freq, freq / sumWordFreq)
-    }.filter { case (word, _, theta) =>
-      // leave the single characters in dictionary for smoothing reason even if they have small theta
-      word.length == 1 || theta >= useProbThld
-    }
+    val sumWordFreq = words.agg(sum("count")).first().getLong(0)
+    val prunedWords = words.withColumn("prob", col("count") / sumWordFreq)
+        .filter(row => {
+          val word = row.getString(0)
+          val prob = row.getDouble(2)
+          if(word.length == 1 || prob >= useProbThld) true
+          else false
+        })
+//      .map { case (word, freq) =>
+//      (word, freq, freq / sumWordFreq)
+//    }
+//      .filter { case (word, _, theta) =>
+//      // leave the single characters in dictionary for smoothing reason even if they have small theta
+//      word.length == 1 || theta >= useProbThld
+//    }
     words.unpersist()
     prunedWords.persist(StorageLevel.MEMORY_AND_DISK_SER_2)
     //normalize the word use probability: prunedWords -> normalizedWords
-    val sumPrunedWordFreq = prunedWords.map(_._2).sum()
-    val normalizedWords = prunedWords.map { case (word, freq, _) =>
-      word -> freq / sumPrunedWordFreq
-    }.collectAsMap().toMap
+//    val sumPrunedWordFreq = prunedWords.map(_._2).sum()
+    // 计算过滤之后的概率
+    val sumPrunedWordFreq = prunedWords.agg(sum("count")).first().getLong(0)
+    val data = prunedWords.withColumn("pro", col("count") / sumPrunedWordFreq)
+        .select("word", "pro").collect()
+
+    val normalizedWords = new mutable.HashMap[String, Double]
+    normalizedWords.sizeHint(data.length)
+    data.foreach { row => normalizedWords.put(row.getString(0), row.getDouble(1)) }
+
+//      .map { case (word, freq, _) =>
+//      word -> freq / sumPrunedWordFreq
+//    }.collectAsMap().toMap
     prunedWords.unpersist()
     //return the overcomplete dictionary: normalizedWords -> dictionary
-    new Dictionary(normalizedWords)
+    // 获得每个单词的归一化之后的概率
+    new Dictionary(normalizedWords.toMap)
   }
 }
